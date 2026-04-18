@@ -1,0 +1,151 @@
+{
+  "input_csv": "data/co2_capture_carbon.csv",
+  "output_root": "data_preprocessing/preprocessed/co2_capture_carbon",
+  "metadata_forward_fill_cols": [
+    "Ref number",
+    "Carbon precursors",
+    "DOI",
+    "Year",
+    "Title"
+  ],
+  "stages": {
+    "metadata_ffill": "data_preprocessing/preprocessed/co2_capture_carbon/01_metadata_ffill/co2_capture_carbon_metadata_ffill.csv",
+    "target_complete": "data_preprocessing/preprocessed/co2_capture_carbon/02_quality_filtered/co2_capture_carbon_target_complete.csv",
+    "target_condition_complete": "data_preprocessing/preprocessed/co2_capture_carbon/02_quality_filtered/co2_capture_carbon_target_condition_complete.csv"
+  },
+  "datasets": {
+    "structure_baseline": {
+      "path": "data_preprocessing/preprocessed/co2_capture_carbon/03_model_ready/co2_capture_carbon_structure_baseline.csv",
+      "rows": 1000,
+      "feature_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)"
+      ],
+      "text_cols": [],
+      "numeric_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)"
+      ],
+      "metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "target_cols": [
+        "Uptake (mmolg-1)"
+      ],
+      "drop_metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "input_len": 5,
+      "output_len": 1,
+      "notes": "Complete-case baseline with structure descriptors and conditions only."
+    },
+    "surface_chemistry_on": {
+      "path": "data_preprocessing/preprocessed/co2_capture_carbon/03_model_ready/co2_capture_carbon_surface_chemistry_on.csv",
+      "rows": 326,
+      "feature_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)",
+        "O (%)",
+        "N (%)"
+      ],
+      "text_cols": [],
+      "numeric_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)",
+        "O (%)",
+        "N (%)"
+      ],
+      "metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "target_cols": [
+        "Uptake (mmolg-1)"
+      ],
+      "drop_metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "input_len": 7,
+      "output_len": 1,
+      "notes": "O/N-only surface-chemistry variant retained for comparison; currently redundant with the C/O/N row set."
+    },
+    "surface_chemistry_con": {
+      "path": "data_preprocessing/preprocessed/co2_capture_carbon/03_model_ready/co2_capture_carbon_surface_chemistry_con.csv",
+      "rows": 326,
+      "feature_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)",
+        "C (%)",
+        "O (%)",
+        "N (%)"
+      ],
+      "text_cols": [],
+      "numeric_cols": [
+        "Sbet (m2g-1)",
+        "Vtotal (cm3g-1)",
+        "Vmicro (cm3g-1)",
+        "P (bar)",
+        "T (K)",
+        "C (%)",
+        "O (%)",
+        "N (%)"
+      ],
+      "metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "target_cols": [
+        "Uptake (mmolg-1)"
+      ],
+      "drop_metadata_cols": [
+        "Ref number",
+        "Carbon precursors",
+        "Sample name",
+        "DOI",
+        "Year",
+        "Title"
+      ],
+      "input_len": 8,
+      "output_len": 1,
+      "notes": "Recommended chemistry-augmented training set with complete C/O/N descriptors."
+    }
+  }
+}

@@ -1,0 +1,102 @@
+stage,column,missing_count,missing_ratio
+raw,Ref number,1183,0.9149265274555298
+raw,Carbon precursors,1174,0.9079659706109822
+raw,Sample name,10,0.007733952049497293
+raw,Sbet (m2g-1),20,0.015467904098994586
+raw,Vtotal (cm3g-1),90,0.06960556844547564
+raw,Vmicro (cm3g-1),146,0.11291569992266048
+raw,P (bar),94,0.07269914926527456
+raw,T (K),107,0.08275328692962104
+raw,C (%),746,0.576952822892498
+raw,O (%),773,0.5978344934261408
+raw,N (%),849,0.6566125290023201
+raw,Uptake (mmolg-1),114,0.08816705336426914
+raw,DOI,1185,0.9164733178654292
+raw,Year,1184,0.9156999226604795
+raw,Title,1184,0.9156999226604795
+metadata_ffill,Ref number,0,0.0
+metadata_ffill,Carbon precursors,0,0.0
+metadata_ffill,Sample name,10,0.007733952049497293
+metadata_ffill,Sbet (m2g-1),20,0.015467904098994586
+metadata_ffill,Vtotal (cm3g-1),90,0.06960556844547564
+metadata_ffill,Vmicro (cm3g-1),146,0.11291569992266048
+metadata_ffill,P (bar),94,0.07269914926527456
+metadata_ffill,T (K),107,0.08275328692962104
+metadata_ffill,C (%),746,0.576952822892498
+metadata_ffill,O (%),773,0.5978344934261408
+metadata_ffill,N (%),849,0.6566125290023201
+metadata_ffill,Uptake (mmolg-1),114,0.08816705336426914
+metadata_ffill,DOI,0,0.0
+metadata_ffill,Year,0,0.0
+metadata_ffill,Title,0,0.0
+target_complete,Ref number,0,0.0
+target_complete,Carbon precursors,0,0.0
+target_complete,Sample name,0,0.0
+target_complete,Sbet (m2g-1),1,0.0008481764206955047
+target_complete,Vtotal (cm3g-1),67,0.056827820186598814
+target_complete,Vmicro (cm3g-1),113,0.09584393553859202
+target_complete,P (bar),21,0.017811704834605598
+target_complete,T (K),32,0.02714164546225615
+target_complete,C (%),662,0.5614927905004241
+target_complete,O (%),677,0.5742154368108566
+target_complete,N (%),760,0.6446140797285835
+target_complete,Uptake (mmolg-1),0,0.0
+target_complete,DOI,0,0.0
+target_complete,Year,0,0.0
+target_complete,Title,0,0.0
+target_condition_complete,Ref number,0,0.0
+target_condition_complete,Carbon precursors,0,0.0
+target_condition_complete,Sample name,0,0.0
+target_condition_complete,Sbet (m2g-1),1,0.0008718395815170009
+target_condition_complete,Vtotal (cm3g-1),63,0.05492589363557106
+target_condition_complete,Vmicro (cm3g-1),105,0.09154315605928509
+target_condition_complete,P (bar),0,0.0
+target_condition_complete,T (K),0,0.0
+target_condition_complete,C (%),656,0.5719267654751525
+target_condition_complete,O (%),658,0.5736704446381866
+target_condition_complete,N (%),754,0.6573670444638187
+target_condition_complete,Uptake (mmolg-1),0,0.0
+target_condition_complete,DOI,0,0.0
+target_condition_complete,Year,0,0.0
+target_condition_complete,Title,0,0.0
+structure_baseline,Ref number,0,0.0
+structure_baseline,Carbon precursors,0,0.0
+structure_baseline,Sample name,0,0.0
+structure_baseline,DOI,0,0.0
+structure_baseline,Year,0,0.0
+structure_baseline,Title,0,0.0
+structure_baseline,Sbet (m2g-1),0,0.0
+structure_baseline,Vtotal (cm3g-1),0,0.0
+structure_baseline,Vmicro (cm3g-1),0,0.0
+structure_baseline,P (bar),0,0.0
+structure_baseline,T (K),0,0.0
+structure_baseline,Uptake (mmolg-1),0,0.0
+surface_chemistry_on,Ref number,0,0.0
+surface_chemistry_on,Carbon precursors,0,0.0
+surface_chemistry_on,Sample name,0,0.0
+surface_chemistry_on,DOI,0,0.0
+surface_chemistry_on,Year,0,0.0
+surface_chemistry_on,Title,0,0.0
+surface_chemistry_on,Sbet (m2g-1),0,0.0
+surface_chemistry_on,Vtotal (cm3g-1),0,0.0
+surface_chemistry_on,Vmicro (cm3g-1),0,0.0
+surface_chemistry_on,P (bar),0,0.0
+surface_chemistry_on,T (K),0,0.0
+surface_chemistry_on,O (%),0,0.0
+surface_chemistry_on,N (%),0,0.0
+surface_chemistry_on,Uptake (mmolg-1),0,0.0
+surface_chemistry_con,Ref number,0,0.0
+surface_chemistry_con,Carbon precursors,0,0.0
+surface_chemistry_con,Sample name,0,0.0
+surface_chemistry_con,DOI,0,0.0
+surface_chemistry_con,Year,0,0.0
+surface_chemistry_con,Title,0,0.0
+surface_chemistry_con,Sbet (m2g-1),0,0.0
+surface_chemistry_con,Vtotal (cm3g-1),0,0.0
+surface_chemistry_con,Vmicro (cm3g-1),0,0.0
+surface_chemistry_con,P (bar),0,0.0
+surface_chemistry_con,T (K),0,0.0
+surface_chemistry_con,C (%),0,0.0
+surface_chemistry_con,O (%),0,0.0
+surface_chemistry_con,N (%),0,0.0
+surface_chemistry_con,Uptake (mmolg-1),0,0.0

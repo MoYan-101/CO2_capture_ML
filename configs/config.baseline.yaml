@@ -1,30 +1,35 @@
 data:
-  path: "./data/co2_capture_carbon.csv"
-  input_len: 9
+  path: "./data_preprocessing/preprocessed/co2_capture_carbon/03_model_ready/co2_capture_carbon_structure_baseline.csv"
+  input_len: 5
   output_len: 1
   test_size: 0.2
   random_seed: 98
 
 data_loader:
   element_cols: []
-  text_cols:
-    - "Carbon precursors"
+  text_cols: []
   y_cols:
     - "Uptake (mmolg-1)"
   drop_metadata_cols:
     - "Ref number"
+    - "Carbon precursors"
     - "Sample name"
     - "DOI"
     - "Year"
     - "Title"
-  impute_method: "kde"
+  impute_missing: false
+  impute_method: "simple"
   preserve_null: false
   save_conflict_report: false
   conflict_report_prefix: "duplicate_input"
-  aggregate_duplicate_inputs: false
+  # Training order: aggregate duplicates -> build X/Y -> grouped split -> standardize/train
+  aggregate_duplicate_inputs: true
   duplicate_target_agg: "median"
   element_embedding: "advanced"
-  log_transform_cols: []
+  log_transform_cols:
+    - "Vtotal (cm3g-1)"
+    - "Vmicro (cm3g-1)"
+    - "P (bar)"
   log_transform_eps: 1e-8
 
 preprocessing:
@@ -34,11 +39,15 @@ preprocessing:
   standardize_all_features_for: ["SVM", "ANN"]
   bounded_output: false
   bounded_output_columns: []
+  target_transform: "log1p"
+  target_transform_columns:
+    - "Uptake (mmolg-1)"
+  target_transform_eps: 1e-8
 
 model:
   types: ["RF", "CatBoost", "DT", "ANN", "XGB", "SVM"]
   ann_params:
-    epochs: 3000
+    epochs: 6000
   dt_params:
     random_state: 42
   rf_params:
@@ -92,20 +101,18 @@ evaluation:
     - "Vmicro (cm3g-1)"
     - "P (bar)"
     - "T (K)"
-    - "C (%)"
-    - "O (%)"
-    - "N (%)"
     - "Uptake (mmolg-1)"
 
 inference:
-  models: ["CatBoost", "XGB"]
+  models: ["CatBoost"]
   max_combinations: 2000
-  n_points: 12
-  enable_3d_heatmap: false
-  skip_3d_models: ["DT", "SVM"]
+  n_points: 40
+  enable_3d_heatmap: true
+  skip_3d_models: ["SVM"]
   heatmap_axes:
     - "P (bar)"
     - "T (K)"
+    - "Sbet (m2g-1)"
   confusion_axes:
     row_name: "Carbon precursors"
     col_name: "Year"
@@ -114,7 +121,7 @@ optuna:
   overfit_penalty_alpha: 0.0
   enable: true
   n_jobs: 1
-  trials: 10
+  trials: 1000
   models: ["RF", "CatBoost", "DT", "ANN", "XGB", "SVM"]
   slice_params:
     ANN: ["hidden_dims", "learning_rate", "dropout", "weight_decay", "batch_size"]
@@ -141,7 +148,7 @@ optuna:
     batch_size_choices: [64, 128, 256]
     optimizer_choices: ["AdamW"]
     activation_choices: ["ReLU", "leakyrelu"]
-    tuning_epochs: 300
+    tuning_epochs: 500
     early_stopping: true
     patience: 5
     log_interval: 5
@@ -161,11 +168,11 @@ optuna:
     ccp_alpha_max: 0.03
   catboost_params:
     iterations_min: 200
-    iterations_max: 600
+    iterations_max: 1000
     learning_rate_min: 0.01
     learning_rate_max: 0.1
     depth_min: 4
-    depth_max: 10
+    depth_max: 12
     l2_leaf_reg_min: 1.0
     l2_leaf_reg_max: 5.0
     random_strength_min: 1e-3
@@ -176,11 +183,11 @@ optuna:
     rsm_max: 1.0
   xgb_params:
     n_estimators_min: 100
-    n_estimators_max: 400
+    n_estimators_max: 500
     learning_rate_min: 0.01
     learning_rate_max: 0.1
     max_depth_min: 3
-    max_depth_max: 8
+    max_depth_max: 10
     reg_alpha_min: 1e-8
     reg_alpha_max: 1e-1
     reg_lambda_min: 1.0

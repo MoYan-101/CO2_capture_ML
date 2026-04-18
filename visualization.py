@@ -426,15 +426,15 @@ def _parse_cli_args():
     parser.add_argument(
         "--config",
         dest="config_path",
-        default=os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.yaml")),
-        help="Path to YAML config file (default: CONFIG_PATH env or configs/config.yaml).",
+        default=os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.baseline.yaml")),
+        help="Path to YAML config file (default: CONFIG_PATH env or configs/config.baseline.yaml).",
     )
     return parser.parse_args()
 
 
 def visualize_main(config_path=None):
     if config_path is None:
-        config_path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.yaml"))
+        config_path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.baseline.yaml"))
     config_path = os.path.abspath(config_path)
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")

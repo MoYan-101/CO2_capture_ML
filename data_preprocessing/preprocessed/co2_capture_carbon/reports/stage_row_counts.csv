@@ -1,0 +1,8 @@
+stage,rows,parent_stage,dropped_from_parent
+raw,1293,,0
+metadata_ffill,1293,raw,0
+target_complete,1179,metadata_ffill,114
+target_condition_complete,1147,target_complete,32
+structure_baseline,1000,target_condition_complete,147
+surface_chemistry_on,326,target_condition_complete,821
+surface_chemistry_con,326,target_condition_complete,821

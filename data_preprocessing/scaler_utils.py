@@ -20,6 +20,126 @@ def _ensure_2d(arr):
     return arr.reshape(-1, 1) if arr.ndim == 1 else arr
 
 
+def _normalize_output_transform_name(name):
+    if name is None:
+        return None
+    key = str(name).strip().lower().replace("-", "").replace("_", "")
+    if key in {"", "none", "null"}:
+        return None
+    if key == "log1p":
+        return "log1p"
+    if key == "log":
+        return "log"
+    raise ValueError(f"Unsupported output transform: {name}")
+
+
+def _normalize_output_transform_specs(output_transforms):
+    if not output_transforms:
+        return []
+    if isinstance(output_transforms, dict):
+        output_transforms = [output_transforms]
+
+    normalized = []
+    for spec in output_transforms:
+        if not isinstance(spec, dict):
+            raise TypeError("Each output transform spec must be a dict.")
+        name = _normalize_output_transform_name(spec.get("name"))
+        if name is None:
+            continue
+
+        cols = spec.get("cols", [])
+        cols = [int(c) for c in cols]
+        cols = sorted(set(cols))
+
+        try:
+            eps = float(spec.get("eps", 1e-8))
+        except (TypeError, ValueError):
+            eps = 1e-8
+        if eps <= 0:
+            eps = 1e-8
+
+        normalized.append({"name": name, "cols": cols, "eps": eps})
+    return normalized
+
+
+def resolve_output_transform_specs(
+    y_col_names,
+    transform_name=None,
+    transform_cols=None,
+    transform_eps=1e-8,
+):
+    name = _normalize_output_transform_name(transform_name)
+    if name is None:
+        return []
+
+    y_names = [str(c).strip() for c in y_col_names]
+    idx_map = {name: idx for idx, name in enumerate(y_names)}
+
+    if transform_cols is None:
+        cols = list(range(len(y_names)))
+    else:
+        cols = []
+        for item in transform_cols:
+            if isinstance(item, (int, np.integer)):
+                idx = int(item)
+                if idx < 0 or idx >= len(y_names):
+                    raise IndexError(f"Output transform index out of range: {idx}")
+            else:
+                key = str(item).strip()
+                if key not in idx_map:
+                    raise KeyError(f"Output transform column not found in targets: {key}")
+                idx = idx_map[key]
+            if idx not in cols:
+                cols.append(idx)
+
+    if not cols:
+        return []
+
+    try:
+        eps = float(transform_eps)
+    except (TypeError, ValueError):
+        eps = 1e-8
+    if eps <= 0:
+        eps = 1e-8
+
+    return [{"name": name, "cols": cols, "eps": eps}]
+
+
+def apply_output_transforms(y, output_transforms=None):
+    specs = _normalize_output_transform_specs(output_transforms)
+    y_out = _ensure_2d(np.asarray(y, dtype=np.float32).copy())
+    if not specs:
+        return y_out
+
+    for spec in specs:
+        cols = spec["cols"]
+        if not cols:
+            continue
+        if spec["name"] == "log1p":
+            y_out[:, cols] = np.log1p(np.clip(y_out[:, cols], -1.0 + spec["eps"], None))
+        elif spec["name"] == "log":
+            y_out[:, cols] = np.log(np.clip(y_out[:, cols], spec["eps"], None))
+        else:
+            raise ValueError(f"Unsupported output transform: {spec['name']}")
+    return y_out
+
+
+def attach_output_transform_metadata(scaler_y, output_transforms=None):
+    specs = _normalize_output_transform_specs(output_transforms)
+    if not specs:
+        return scaler_y
+
+    if scaler_y is None:
+        wrapped = {"type": "identity", "scaler": None}
+    elif isinstance(scaler_y, dict):
+        wrapped = dict(scaler_y)
+    else:
+        wrapped = {"type": "standard", "scaler": scaler_y}
+
+    wrapped["output_transforms"] = specs
+    return wrapped
+
+
 def bounded_transform(y):
     """
     y in [0,100] => z in [-1,1], linear:
@@ -129,14 +249,29 @@ def inverse_transform_output(y_pred, scaler_y):
     if not isinstance(scaler_y, dict):
         return scaler_y.inverse_transform(y_pred)
 
-    transform_type = scaler_y["type"]
-    scaler_obj = scaler_y["scaler"]
+    transform_type = scaler_y.get("type", "standard")
+    scaler_obj = scaler_y.get("scaler", None)
 
-    y_ = scaler_obj.inverse_transform(y_pred)          # <-- 现在一定是 2D
+    if scaler_obj is not None:
+        y_ = scaler_obj.inverse_transform(y_pred)
+    else:
+        y_ = y_pred.copy()
 
     if transform_type.startswith("bounded"):
         bound_cols = scaler_y.get("bounded_cols", range(y_.shape[1]))
         for i in bound_cols:
             y_[:, i] = inverse_bounded_transform(y_[:, i])
+
+    output_transforms = _normalize_output_transform_specs(scaler_y.get("output_transforms", None))
+    for spec in reversed(output_transforms):
+        cols = spec["cols"]
+        if not cols:
+            continue
+        if spec["name"] == "log1p":
+            y_[:, cols] = np.expm1(y_[:, cols])
+        elif spec["name"] == "log":
+            y_[:, cols] = np.exp(y_[:, cols])
+        else:
+            raise ValueError(f"Unsupported output transform: {spec['name']}")
 
     return y_

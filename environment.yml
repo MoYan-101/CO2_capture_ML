@@ -1,0 +1,30 @@
+name: ml
+channels:
+  - conda-forge
+  - pytorch
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - pandas
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - seaborn
+  - tqdm
+  - joblib
+  - pyyaml
+  - xlsxwriter
+  - plotly
+  - chardet
+  - pytorch
+  - pip:
+      - xgboost
+      - catboost
+      - optuna
+      - shap
+      - sentence-transformers
+      - transformers
+      - matminer
+      - pymatgen
+      - dcor

@@ -1,30 +1,35 @@
 data:
-  path: "./data/co2_capture_carbon.csv"
-  input_len: 9
+  path: "./data_preprocessing/preprocessed/co2_capture_carbon/03_model_ready/co2_capture_carbon_surface_chemistry_con.csv"
+  input_len: 8
   output_len: 1
   test_size: 0.2
-  random_seed: 98
+  random_seed: 42
 
 data_loader:
   element_cols: []
-  text_cols:
-    - "Carbon precursors"
+  text_cols: []
   y_cols:
     - "Uptake (mmolg-1)"
   drop_metadata_cols:
     - "Ref number"
+    - "Carbon precursors"
     - "Sample name"
     - "DOI"
     - "Year"
     - "Title"
-  impute_method: "kde"
+  impute_missing: false
+  impute_method: "simple"
   preserve_null: false
   save_conflict_report: false
   conflict_report_prefix: "duplicate_input"
-  aggregate_duplicate_inputs: false
+  # Training order: aggregate duplicates -> build X/Y -> grouped split -> standardize/train
+  aggregate_duplicate_inputs: true
   duplicate_target_agg: "median"
   element_embedding: "advanced"
-  log_transform_cols: []
+  log_transform_cols:
+    - "Vtotal (cm3g-1)"
+    - "Vmicro (cm3g-1)"
+    - "P (bar)"
   log_transform_eps: 1e-8
 
 preprocessing:
@@ -34,6 +39,10 @@ preprocessing:
   standardize_all_features_for: ["SVM", "ANN"]
   bounded_output: false
   bounded_output_columns: []
+  target_transform: "log1p"
+  target_transform_columns:
+    - "Uptake (mmolg-1)"
+  target_transform_eps: 1e-8
 
 model:
   types: ["RF", "CatBoost", "DT", "ANN", "XGB", "SVM"]

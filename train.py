@@ -3,10 +3,10 @@
 """
 train.py
 
-- 读取 CSV 并构建智能特征 (数值 + 元素/文本嵌入)
-- 得到 X, Y, numeric_cols_idx, x_col_names, y_col_names, observed_values, onehot_groups
+- 读取 model-ready CSV 并构建训练特征
+- 得到 X, Y, numeric_cols_idx, x_col_names, y_col_names
 - 训练模型并保存
-- 将特征统计、分组信息与观察值写入 metadata.pkl
+- 将特征统计与元数据写入 metadata.pkl
 """
 
 import yaml
@@ -14,6 +14,7 @@ import os
 import argparse
 import numpy as np
 import torch
+from torch.utils.data import TensorDataset
 import joblib
 import copy
 import shap
@@ -23,7 +24,6 @@ import shutil  # 用于复制调参结果到 evaluation 目录
 from utils import get_model_dir, get_root_model_dir, get_postprocess_dir, get_eval_dir, get_run_id
 import json                    # 需要写 ann_meta
 from typing import cast
-from data_preprocessing.my_dataset import MyDataset
 
 from data_preprocessing.data_loader_modified import (
     load_smart_data_simple,
@@ -34,7 +34,12 @@ from data_preprocessing.data_loader_modified import (
 )
 from data_preprocessing.data_split import split_data
 from data_preprocessing.scaler_utils import (
-    standardize_data, inverse_transform_output, save_scaler
+    standardize_data,
+    inverse_transform_output,
+    save_scaler,
+    apply_output_transforms,
+    attach_output_transform_metadata,
+    resolve_output_transform_specs,
 )
 
 # 各种模型
@@ -51,7 +56,6 @@ from trainers.train_torch import train_torch_model_dataloader
 from trainers.train_sklearn import train_sklearn_model
 from evaluation.metrics import compute_regression_metrics, compute_mixed_metrics
 
-from sklearn.model_selection import KFold
 import pandas as pd            # ← 写在已有 import 区
 from sklearn.metrics import r2_score, mean_squared_error, mean_absolute_error
 from utils import ensure_dir
@@ -185,6 +189,70 @@ def _to_2d(arr: np.ndarray) -> np.ndarray:
     """把 (n,) 向量统一 reshape 成 (n,1)。已是 2-D 的直接返回。"""
     return arr.reshape(-1, 1) if arr.ndim == 1 else arr
 
+
+def _ensure_finite_array(name: str, arr: np.ndarray) -> np.ndarray:
+    arr = np.asarray(arr, dtype=float)
+    bad_mask = ~np.isfinite(arr)
+    if np.any(bad_mask):
+        bad_values = arr[bad_mask][:5].tolist()
+        raise ValueError(
+            f"{name} contains {int(np.count_nonzero(bad_mask))} non-finite values. "
+            f"Sample={bad_values}"
+        )
+    return arr
+
+
+def _build_tensor_dataset(X: np.ndarray, Y: np.ndarray) -> TensorDataset:
+    return TensorDataset(
+        torch.as_tensor(X, dtype=torch.float32),
+        torch.as_tensor(Y, dtype=torch.float32),
+    )
+
+
+def _build_duplicate_input_group_ids(X: np.ndarray) -> tuple[np.ndarray, int, int]:
+    X_arr = np.asarray(X)
+    if X_arr.ndim != 2:
+        raise ValueError(f"Expected 2D feature matrix, got shape={X_arr.shape}.")
+    if X_arr.shape[0] == 0:
+        return np.empty((0,), dtype=np.int64), 0, 0
+    if X_arr.shape[1] == 0:
+        return np.zeros((X_arr.shape[0],), dtype=np.int64), 1 if X_arr.shape[0] else 0, X_arr.shape[0]
+
+    row_view = np.ascontiguousarray(X_arr).view(
+        np.dtype((np.void, X_arr.dtype.itemsize * X_arr.shape[1]))
+    ).reshape(-1)
+    _, inverse, counts = np.unique(row_view, return_inverse=True, return_counts=True)
+    duplicate_group_count = int((counts > 1).sum())
+    duplicate_row_count = int(counts[counts > 1].sum())
+    return inverse.astype(np.int64), duplicate_group_count, duplicate_row_count
+
+
+def _iter_group_kfold(groups: np.ndarray, n_splits: int, random_state: int):
+    groups_arr = np.asarray(groups)
+    unique_groups, counts = np.unique(groups_arr, return_counts=True)
+    if unique_groups.size < n_splits:
+        raise ValueError(
+            f"n_splits={n_splits} exceeds the number of unique groups={unique_groups.size}."
+        )
+
+    rng = np.random.default_rng(random_state)
+    order = np.arange(unique_groups.size)
+    rng.shuffle(order)
+    order = sorted(order, key=lambda idx: (-counts[idx], int(idx)))
+
+    fold_groups: list[list[int]] = [[] for _ in range(n_splits)]
+    fold_sizes = [0] * n_splits
+    for idx in order:
+        fold_id = min(range(n_splits), key=lambda fid: (fold_sizes[fid], fid))
+        fold_groups[fold_id].append(unique_groups[idx])
+        fold_sizes[fold_id] += int(counts[idx])
+
+    for fold_id in range(n_splits):
+        val_mask = np.isin(groups_arr, fold_groups[fold_id])
+        val_idx = np.flatnonzero(val_mask)
+        train_idx = np.flatnonzero(~val_mask)
+        yield train_idx, val_idx
+
 def _resolve_scale_cols_idx(config, model_type, numeric_cols_idx, n_features):
     """
     选择输入标准化的列：
@@ -226,17 +294,37 @@ def _apply_log_transform(X, x_col_names, cols, eps, numeric_cols_idx=None, tag=N
         X_new[:, idx] = np.log(np.clip(col, eps, None))
     return X_new
 
+
+def _resolve_target_transform_specs(config, y_col_names):
+    pre_cfg = config.get("preprocessing", {})
+    specs = resolve_output_transform_specs(
+        y_col_names=y_col_names,
+        transform_name=pre_cfg.get("target_transform", None),
+        transform_cols=pre_cfg.get("target_transform_columns", None),
+        transform_eps=pre_cfg.get("target_transform_eps", 1e-8),
+    )
+    if specs:
+        desc = []
+        for spec in specs:
+            names = [y_col_names[i] for i in spec["cols"]]
+            desc.append(f"{spec['name']} -> {names}")
+        print(f"[INFO] Target transforms enabled: {', '.join(desc)}")
+    return specs
+
 # -----------------------------------------------------------------------
 # main tuner
 # -----------------------------------------------------------------------
-def tune_model(model_type, config, X, Y,
+def tune_model(model_type, config, X, Y, Y_raw,
                numeric_cols_idx, x_col_names, y_col_names,
-               random_seed):
+               random_seed, target_transform_specs=None, input_groups=None):
 
     # 1) split & standardize --------------------------------------------------
     scale_cols_idx = _resolve_scale_cols_idx(config, model_type, numeric_cols_idx, X.shape[1])
     X_train, X_val, Y_train, Y_val = split_data(
-        X, Y, test_size=config["data"]["test_size"], random_state=random_seed
+        X, Y, test_size=config["data"]["test_size"], random_state=random_seed, groups=input_groups
+    )
+    _, _, Y_train_raw, Y_val_raw = split_data(
+        X, Y_raw, test_size=config["data"]["test_size"], random_state=random_seed, groups=input_groups
     )
     (X_train_s, X_val_s, sx), (Y_train_s, Y_val_s, sy) = standardize_data(
         X_train, X_val, Y_train, Y_val,
@@ -245,6 +333,7 @@ def tune_model(model_type, config, X, Y,
         numeric_cols_idx=numeric_cols_idx,
         scale_cols_idx=scale_cols_idx
     )
+    sy = attach_output_transform_metadata(sy, target_transform_specs)
     cpu_total = max(1, int(os.cpu_count() or 1))
     optuna_jobs = max(1, int(config.get("optuna", {}).get("n_jobs", 1)))
     tune_rf_n_jobs = _resolve_worker_threads(
@@ -305,7 +394,7 @@ def tune_model(model_type, config, X, Y,
 
             loss_fn = get_torch_loss_fn(config["loss"]["type"])
 
-            train_ds, val_ds = MyDataset(X_train_s, Y_train_s), MyDataset(X_val_s, Y_val_s)
+            train_ds, val_ds = _build_tensor_dataset(X_train_s, Y_train_s), _build_tensor_dataset(X_val_s, Y_val_s)
 
             model_instance, _, _ = train_torch_model_dataloader(
                 model_instance, train_ds, val_ds,
@@ -475,8 +564,19 @@ def tune_model(model_type, config, X, Y,
             raise ValueError(f"Tuning for {model_type} not implemented.")
 
         # -------- metrics & objective  ---------------------------------------
-        m_train = compute_regression_metrics(Y_train_s, pred_train)
-        m_val   = compute_regression_metrics(Y_val_s,   pred_val)
+        pred_train = _to_2d(pred_train)
+        pred_val = _to_2d(pred_val)
+
+        try:
+            pred_train = _ensure_finite_array("pred_train_std", pred_train)
+            pred_val = _ensure_finite_array("pred_val_std", pred_val)
+            m_train = compute_regression_metrics(Y_train_s, pred_train)
+            m_val   = compute_regression_metrics(Y_val_s,   pred_val)
+            pred_val_raw = inverse_transform_output(pred_val, sy)
+            pred_val_raw = _ensure_finite_array("pred_val_raw", pred_val_raw)
+        except (ValueError, FloatingPointError, OverflowError) as e:
+            trial.set_user_attr("invalid_trial_reason", str(e))
+            raise optuna.TrialPruned(f"{model_type} invalid trial: {e}") from e
 
         ratio  = m_val["MSE"] / max(m_train["MSE"], 1e-8)
         alpha  = float(config.get("optuna", {}).get("overfit_penalty_alpha", 1.0))
@@ -488,8 +588,7 @@ def tune_model(model_type, config, X, Y,
 
         # 反标准化 R²
         trial.set_user_attr("R2_RAW",
-            compute_regression_metrics(Y_val,
-                inverse_transform_output(pred_val, sy))["R2"])
+            compute_regression_metrics(Y_val_raw, pred_val_raw)["R2"])
 
         return obj
 
@@ -534,6 +633,16 @@ def tune_model(model_type, config, X, Y,
                 torch.set_num_interop_threads(int(restore_torch_interop))
             except Exception as e:
                 print(f"[WARN] Failed to restore torch num_interop_threads: {e}")
+
+    completed_trials = [
+        t for t in study.trials
+        if t.state == optuna.trial.TrialState.COMPLETE
+    ]
+    if not completed_trials:
+        raise RuntimeError(
+            f"[{model_type}] Optuna finished without any completed trials. "
+            "Check the tuning search space and invalid_trial_reason in the trial logs."
+        )
 
     best_params = study.best_params
     print(f"[{model_type}] Best Obj={study.best_value:.6f}, params={best_params}")
@@ -709,15 +818,15 @@ def _parse_cli_args():
     parser.add_argument(
         "--config",
         dest="config_path",
-        default=os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.yaml")),
-        help="Path to YAML config file (default: CONFIG_PATH env or configs/config.yaml).",
+        default=os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.baseline.yaml")),
+        help="Path to YAML config file (default: CONFIG_PATH env or configs/config.baseline.yaml).",
     )
     return parser.parse_args()
 
 
 def train_main(config_path=None):
     if config_path is None:
-        config_path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.yaml"))
+        config_path = os.environ.get("CONFIG_PATH", os.path.join(os.path.dirname(__file__), "configs", "config.baseline.yaml"))
     config_path = os.path.abspath(config_path)
     if not os.path.exists(config_path):
         raise FileNotFoundError(f"Config file not found: {config_path}")
@@ -758,21 +867,16 @@ def train_main(config_path=None):
     except Exception as e:
         print(f"[WARN] Failed to save config snapshot: {e}")
 
-    # 1) 加载数据（智能特征器）
+    # 1) 加载数据（model-ready loader）
     dl_cfg = config.get("data_loader", {})
-    element_cols = tuple(dl_cfg.get("element_cols", ["Promoter 1", "Promoter 2"]))
-    text_cols = tuple(dl_cfg.get("text_cols", ["Type of sysnthesis procedure"]))
+    element_cols = tuple(dl_cfg.get("element_cols", []))
+    text_cols = tuple(dl_cfg.get("text_cols", []))
     y_cols = dl_cfg.get("y_cols", None)
-    element_embedding = dl_cfg.get("element_embedding", "advanced")
     drop_metadata_cols = tuple(dl_cfg.get("drop_metadata_cols", ["DOI", "Name", "Year"]))
-    fill_numeric = dl_cfg.get("fill_numeric", "median")
     missing_text_token = dl_cfg.get("missing_text_token", "__MISSING__")
-    impute_missing = dl_cfg.get("impute_missing", True)
+    impute_missing = dl_cfg.get("impute_missing", False)
     impute_method = dl_cfg.get("impute_method", "simple")
-    impute_seed = dl_cfg.get("impute_seed", 42)
     preserve_null = dl_cfg.get("preserve_null", True)
-    impute_type_substring = dl_cfg.get("impute_type_substring", "Type")
-    impute_skip_substring = dl_cfg.get("impute_skip_substring", "ame")
     log_transform_cols = dl_cfg.get("log_transform_cols", None)
     log_transform_cols_extra_for = dl_cfg.get("log_transform_cols_extra_for", {}) or {}
     log_transform_eps = dl_cfg.get("log_transform_eps", 1e-8)
@@ -801,25 +905,13 @@ def train_main(config_path=None):
         element_cols=element_cols,
         text_cols=text_cols,
         y_cols=y_cols,
-        promoter_ratio_cols=dl_cfg.get("promoter_ratio_cols", None),
-        promoter_onehot=dl_cfg.get("promoter_onehot", True),
-        promoter_interaction_features=dl_cfg.get("promoter_interaction_features", True),
-        promoter_pair_onehot=dl_cfg.get("promoter_pair_onehot", True),
-        promoter_pair_onehot_min_count=dl_cfg.get("promoter_pair_onehot_min_count", 2),
-        promoter_pair_onehot_max_categories=dl_cfg.get("promoter_pair_onehot_max_categories", 64),
-        promoter_interaction_eps=dl_cfg.get("promoter_interaction_eps", 1e-8),
         log_transform_cols=log_transform_cols,
         log_transform_eps=log_transform_eps,
-        element_embedding=element_embedding,
         drop_metadata_cols=drop_metadata_cols,
-        fill_numeric=fill_numeric,
         missing_text_token=missing_text_token,
         impute_missing=impute_missing,
         impute_method=impute_method,
-        impute_seed=impute_seed,
         preserve_null=preserve_null,
-        impute_type_substring=impute_type_substring,
-        impute_skip_substring=impute_skip_substring,
         aggregate_duplicate_inputs=dl_cfg.get("aggregate_duplicate_inputs", False),
         duplicate_target_agg=dl_cfg.get("duplicate_target_agg", "median"),
         return_dataframe=False
@@ -834,8 +926,18 @@ def train_main(config_path=None):
             "Please align `data_loader.y_cols` and `data.output_len`."
         )
 
+    Y_raw = _to_2d(np.asarray(Y, dtype=np.float32))
+    target_transform_specs = _resolve_target_transform_specs(config, y_col_names)
+    Y_model = apply_output_transforms(Y_raw, target_transform_specs)
+
     # 基础特征矩阵（已包含 base log 变换）
     X_base = X
+    input_group_ids, duplicate_group_count, duplicate_row_count = _build_duplicate_input_group_ids(X_base)
+    unique_input_group_count = int(np.unique(input_group_ids).size)
+    print(
+        f"[INFO] Input group split basis => unique_groups={unique_input_group_count}, "
+        f"duplicate_groups={duplicate_group_count}, duplicate_rows={duplicate_row_count}"
+    )
 
     # 额外 log 变换（仅对指定模型叠加）
     model_types = config.get("model", {}).get("types", [])
@@ -874,15 +976,10 @@ def train_main(config_path=None):
         drop_nan=True,
         input_len=in_len,
         output_len=out_len,
-        fill_same_as_train=True,
         element_cols=element_cols,
-        promoter_ratio_cols=dl_cfg.get("promoter_ratio_cols", None),
         text_cols=text_cols,
         y_cols=y_cols,
         drop_metadata_cols=drop_metadata_cols,
-        impute_seed=impute_seed,
-        impute_type_substring=impute_type_substring,
-        impute_skip_substring=impute_skip_substring,
         missing_text_token=missing_text_token,
         impute_method=impute_method,
         aggregate_duplicate_inputs=dl_cfg.get("aggregate_duplicate_inputs", False),
@@ -894,7 +991,7 @@ def train_main(config_path=None):
     print(f"[INFO] Saved raw 14-col CSV => {raw_csv_path}")
 
     # 2) 提取统计信息 => metadata.pkl
-    stats_dict = extract_data_statistics(X_base, x_col_names, numeric_cols_idx, Y=Y, y_col_names=y_col_names)
+    stats_dict = extract_data_statistics(X_base, x_col_names, numeric_cols_idx, Y=Y_raw, y_col_names=y_col_names)
     stats_dict["numeric_cols_idx"] = numeric_cols_idx  # ← 这行新增
     stats_dict["scale_cols_idx"] = scale_cols_idx
     stats_dict["scale_cols_idx_by_model"] = scale_cols_idx_by_model
@@ -904,45 +1001,40 @@ def train_main(config_path=None):
     stats_dict["observed_values"] = observed_values
     stats_dict["observed_value_counts"] = observed_value_counts
     stats_dict["observed_value_ratios"] = observed_value_ratios
-    stats_dict["group_names"] = list(element_cols) + list(text_cols)
+    stats_dict["group_names"] = list(text_cols)
     stats_dict["group_value_vectors"] = build_group_value_vectors(
         observed_values=observed_values,
         observed_value_counts=observed_value_counts,
         observed_value_ratios=observed_value_ratios,
         element_cols=element_cols,
         text_cols=text_cols,
-        element_embedding=element_embedding,
-        promoter_onehot=dl_cfg.get("promoter_onehot", True)
     )
     stats_dict["feature_means"] = X_base.mean(axis=0)
     stats_dict["x_col_names"] = x_col_names
     stats_dict["y_col_names"] = y_col_names
+    stats_dict["input_group_summary"] = {
+        "unique_groups": unique_input_group_count,
+        "duplicate_groups": duplicate_group_count,
+        "duplicate_rows": duplicate_row_count,
+    }
     stats_dict["loader_config"] = {
         "element_cols": list(element_cols),
         "text_cols": list(text_cols),
         "y_cols": list(y_cols) if y_cols is not None else None,
-        "promoter_ratio_cols": dl_cfg.get("promoter_ratio_cols", None),
-        "promoter_onehot": dl_cfg.get("promoter_onehot", True),
-        "promoter_interaction_features": dl_cfg.get("promoter_interaction_features", True),
-        "promoter_pair_onehot": dl_cfg.get("promoter_pair_onehot", True),
-        "promoter_pair_onehot_min_count": dl_cfg.get("promoter_pair_onehot_min_count", 2),
-        "promoter_pair_onehot_max_categories": dl_cfg.get("promoter_pair_onehot_max_categories", 64),
-        "promoter_interaction_eps": dl_cfg.get("promoter_interaction_eps", 1e-8),
         "log_transform_cols": log_base,
         "log_transform_cols_extra_for": log_transform_cols_extra_for,
         "log_transform_eps": log_transform_eps,
-        "element_embedding": element_embedding,
         "drop_metadata_cols": list(drop_metadata_cols),
-        "fill_numeric": fill_numeric,
         "missing_text_token": missing_text_token,
         "impute_missing": impute_missing,
         "impute_method": impute_method,
-        "impute_seed": impute_seed,
         "preserve_null": preserve_null,
-        "impute_type_substring": impute_type_substring,
-        "impute_skip_substring": impute_skip_substring,
         "aggregate_duplicate_inputs": dl_cfg.get("aggregate_duplicate_inputs", False),
-        "duplicate_target_agg": dl_cfg.get("duplicate_target_agg", "median")
+        "duplicate_target_agg": dl_cfg.get("duplicate_target_agg", "median"),
+        "target_transform": config.get("preprocessing", {}).get("target_transform", None),
+        "target_transform_columns": config.get("preprocessing", {}).get("target_transform_columns", None),
+        "target_transform_eps": config.get("preprocessing", {}).get("target_transform_eps", 1e-8),
+        "target_transform_specs": copy.deepcopy(target_transform_specs),
     }
 
     meta_path = os.path.join(root_model_dir, "metadata.pkl")
@@ -958,7 +1050,7 @@ def train_main(config_path=None):
         if extra_cols:
             # 仅更新连续特征统计与均值
             stats_extra = extract_data_statistics(
-                X_by_model[m], x_col_names, numeric_cols_idx, Y=Y, y_col_names=y_col_names
+                X_by_model[m], x_col_names, numeric_cols_idx, Y=Y_raw, y_col_names=y_col_names
             )
             stats_m["continuous_cols"] = stats_extra["continuous_cols"]
             stats_m["feature_means"] = X_by_model[m].mean(axis=0)
@@ -968,7 +1060,8 @@ def train_main(config_path=None):
     # 3) 数据拆分（用于保存 Y_train/Y_val；各模型训练时会各自 split）
     random_seed = config["data"].get("random_seed", 42)
     X_train, X_val, Y_train, Y_val = split_data(
-        X_base, Y, test_size=config["data"]["test_size"], random_state=random_seed
+        X_base, Y_raw, test_size=config["data"]["test_size"], random_state=random_seed,
+        groups=input_group_ids
     )
     bounded_cols = config["preprocessing"].get("bounded_output_columns", None)
     if bounded_cols is not None:
@@ -989,8 +1082,10 @@ def train_main(config_path=None):
         for mtype in config["optuna"]["models"]:
             print(f"\n[INFO] Tuning hyperparameters for {mtype} ...")
             study, best_params = tune_model(
-                mtype, config, X_by_model.get(mtype, X_base), Y,
-                numeric_cols_idx, x_col_names, y_col_names, random_seed
+                mtype, config, X_by_model.get(mtype, X_base), Y_model, Y_raw,
+                numeric_cols_idx, x_col_names, y_col_names, random_seed,
+                target_transform_specs=target_transform_specs,
+                input_groups=input_group_ids
             )
             optuna_dir = get_postprocess_dir(csv_name, run_id, "optuna", mtype)
             ensure_dir(optuna_dir)
@@ -1001,10 +1096,15 @@ def train_main(config_path=None):
     # 5) K‑Fold 交叉验证 (保存每折明细 + 过拟合度量)
     # --------------------------------------------------------------
     if config["evaluation"].get("do_cross_validation", False):
-        kf = KFold(n_splits=5, shuffle=True, random_state=random_seed)
+        n_splits_cv = min(5, unique_input_group_count)
+        if n_splits_cv < 2:
+            print("[WARN] Not enough unique input groups for grouped CV; skip cross validation.")
+            n_splits_cv = 0
         cv_metrics = {}  # <- 将写入 postprocessing/…/train/cv_metrics.pkl
 
         for mtype in config["model"]["types"]:
+            if n_splits_cv < 2:
+                break
             print(f"[INFO] Running 5‑fold CV for model: {mtype}")
             scale_cols_idx_cv = _resolve_scale_cols_idx(config, mtype, numeric_cols_idx, X_base.shape[1])
             X_m = X_by_model.get(mtype, X_base)
@@ -1015,11 +1115,12 @@ def train_main(config_path=None):
             r2_tr, r2_va = [], []
 
             fold_id = 1
-            for train_idx, val_idx in kf.split(X_m):
+            for train_idx, val_idx in _iter_group_kfold(input_group_ids, n_splits_cv, random_seed):
                 print(f"  • Fold {fold_id}: train={len(train_idx)}, val={len(val_idx)}")
                 # -------------------------------- split / scale
                 X_tr, X_va = X_m[train_idx], X_m[val_idx]
-                Y_tr, Y_va = Y[train_idx], Y[val_idx]
+                Y_tr, Y_va = Y_model[train_idx], Y_model[val_idx]
+                Y_tr_raw, Y_va_raw = Y_raw[train_idx], Y_raw[val_idx]
 
                 (X_tr_s, X_va_s, _), (Y_tr_s, Y_va_s, sy_fold) = standardize_data(
                     X_tr, X_va, Y_tr, Y_va,
@@ -1031,6 +1132,7 @@ def train_main(config_path=None):
                                       config["preprocessing"].get("bounded_output", False),
                     bounded_output_cols_idx=bounded_indices
                 )
+                sy_fold = attach_output_transform_metadata(sy_fold, target_transform_specs)
 
                 # -------------------------------- build & train model_cv
                 if mtype == "ANN":
@@ -1042,8 +1144,8 @@ def train_main(config_path=None):
                         ann_cfg["epochs"] = config["model"].get("ann_params", {}).get("epochs", 6000)
 
                     loss_fn = get_torch_loss_fn(config["loss"]["type"])
-                    train_ds = MyDataset(X_tr_s, Y_tr_s)
-                    val_ds = MyDataset(X_va_s, Y_va_s)
+                    train_ds = _build_tensor_dataset(X_tr_s, Y_tr_s)
+                    val_ds = _build_tensor_dataset(X_va_s, Y_va_s)
 
                     model_cv, _, _ = train_torch_model_dataloader(
                         model_cv, train_ds, val_ds,
@@ -1083,17 +1185,21 @@ def train_main(config_path=None):
                 # -------------------------------- 评估 (STD 域 + 反标准化 R²)
                 m_tr_std = compute_regression_metrics(Y_tr_s, pred_tr)
                 m_va_std = compute_regression_metrics(Y_va_s, pred_va)
+                pred_tr_raw = inverse_transform_output(pred_tr, sy_fold) if sy_fold is not None else pred_tr
+                pred_va_raw = inverse_transform_output(pred_va, sy_fold) if sy_fold is not None else pred_va
+                m_tr_raw = compute_regression_metrics(Y_tr_raw, pred_tr_raw)
+                m_va_raw = compute_regression_metrics(Y_va_raw, pred_va_raw)
 
                 # 存 list
                 mse_tr.append(m_tr_std["MSE"]);
                 mse_va.append(m_va_std["MSE"])
                 mae_tr.append(m_tr_std["MAE"]);
                 mae_va.append(m_va_std["MAE"])
-                r2_tr.append(m_tr_std["R2"]);
-                r2_va.append(m_va_std["R2"])
+                r2_tr.append(m_tr_raw["R2"]);
+                r2_va.append(m_va_raw["R2"])
 
                 print(f"    ↳ Fold‑{fold_id}  MSE={m_va_std['MSE']:.4f}  "
-                      f"MAE={m_va_std['MAE']:.4f}  R²={m_va_std['R2']:.4f}")
+                      f"MAE={m_va_std['MAE']:.4f}  R²={m_va_raw['R2']:.4f}")
                 fold_id += 1
 
             # -------- 过拟合指标 per‑fold --------
@@ -1130,7 +1236,12 @@ def train_main(config_path=None):
         print(f"\n=== Train model: {mtype} ===")
         X_m = X_by_model.get(mtype, X_base)
         X_train, X_val, Y_train, Y_val = split_data(
-            X_m, Y, test_size=config["data"]["test_size"], random_state=random_seed
+            X_m, Y_model, test_size=config["data"]["test_size"], random_state=random_seed,
+            groups=input_group_ids
+        )
+        _, _, Y_train_raw, Y_val_raw = split_data(
+            X_m, Y_raw, test_size=config["data"]["test_size"], random_state=random_seed,
+            groups=input_group_ids
         )
         scale_cols_idx_m = _resolve_scale_cols_idx(config, mtype, numeric_cols_idx, X_base.shape[1])
         (X_train_s, X_val_s, sx), (Y_train_s, Y_val_s, sy) = standardize_data(
@@ -1142,6 +1253,7 @@ def train_main(config_path=None):
             do_output_bounded=(bounded_indices is not None) or config["preprocessing"].get("bounded_output", False),
             bounded_output_cols_idx=bounded_indices
         )
+        sy = attach_output_transform_metadata(sy, target_transform_specs)
         outdir_m = os.path.join(base_outdir, mtype)
         ensure_dir(outdir_m)
         # 针对ANN，解包返回的超参数字典
@@ -1153,8 +1265,8 @@ def train_main(config_path=None):
             if "epochs" not in ann_cfg:
                 ann_cfg["epochs"] = config["model"].get("ann_params",{}).get("epochs", 6000)
             loss_fn = get_torch_loss_fn(config["loss"]["type"])
-            train_ds = MyDataset(X_train_s, Y_train_s)
-            val_ds = MyDataset(X_val_s, Y_val_s)
+            train_ds = _build_tensor_dataset(X_train_s, Y_train_s)
+            val_ds = _build_tensor_dataset(X_val_s, Y_val_s)
             # 正式训练阶段若存在checkpoint，则加载；否则按optuna初始化训练
             if os.path.exists(ann_cfg["checkpoint_path"]):
                 print(f"[INFO] Found checkpoint for {mtype}, loading weights from {ann_cfg['checkpoint_path']}")
@@ -1199,10 +1311,8 @@ def train_main(config_path=None):
         # ------------------------------------------------------------------------
 
         # ---------- 反标准化 ----------
-        train_pred_raw = inverse_transform_output(train_pred_std, sy) \
-            if config["preprocessing"]["standardize_output"] else train_pred_std
-        val_pred_raw = inverse_transform_output(val_pred_std, sy) \
-            if config["preprocessing"]["standardize_output"] else val_pred_std
+        train_pred_raw = inverse_transform_output(train_pred_std, sy) if sy is not None else train_pred_std
+        val_pred_raw = inverse_transform_output(val_pred_std, sy) if sy is not None else val_pred_std
         # ② 再把 raw 结果也统一成 2-D ------------------------
         train_pred_raw = _to_2d(train_pred_raw)
         val_pred_raw = _to_2d(val_pred_raw)
@@ -1210,16 +1320,16 @@ def train_main(config_path=None):
         # --- 把 y 也保证成 2-D（只需做一次） -------------------------
         Y_train_s = _to_2d(Y_train_s)
         Y_val_s = _to_2d(Y_val_s)
-        Y_train = _to_2d(Y_train)
-        Y_val = _to_2d(Y_val)
+        Y_train_raw = _to_2d(Y_train_raw)
+        Y_val_raw = _to_2d(Y_val_raw)
         # -------------------------------------------------------------
 
         # ---------- 计算三套指标 ----------
         std_tr = compute_regression_metrics(Y_train_s, train_pred_std)
         std_va = compute_regression_metrics(Y_val_s, val_pred_std)
 
-        raw_tr = compute_regression_metrics(Y_train, train_pred_raw)
-        raw_va = compute_regression_metrics(Y_val, val_pred_raw)
+        raw_tr = compute_regression_metrics(Y_train_raw, train_pred_raw)
+        raw_va = compute_regression_metrics(Y_val_raw, val_pred_raw)
 
         mix_tr = {"MSE": std_tr["MSE"], "MAE": std_tr["MAE"], "R2": raw_tr["R2"]}
         mix_va = {"MSE": std_va["MSE"], "MAE": std_va["MAE"], "R2": raw_va["R2"]}
@@ -1247,8 +1357,8 @@ def train_main(config_path=None):
 
         for d, name in enumerate(out_names):
             # 1) R² —— RAW 域
-            r2_tr = r2_score(Y_train[:, d], train_pred_raw[:, d])
-            r2_va = r2_score(Y_val[:, d], val_pred_raw[:, d])
+            r2_tr = r2_score(Y_train_raw[:, d], train_pred_raw[:, d])
+            r2_va = r2_score(Y_val_raw[:, d], val_pred_raw[:, d])
 
             # 2) MSE / MAE —— STD 域
             mse_tr = mean_squared_error(Y_train_s[:, d], train_pred_std[:, d])

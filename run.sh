@@ -2,7 +2,7 @@
 set -e
 
 if [ "$#" -gt 1 ]; then
-  echo "[ERROR] Usage: bash run.sh [full|test|/path/to/config.yaml]"
+  echo "[ERROR] Usage: bash run.sh [baseline|surface|surface_con|surface_on|/path/to/config.yaml]"
   exit 1
 fi
 
@@ -25,24 +25,33 @@ if [ -z "$PY" ]; then
   fi
 fi
 
-if [ -z "${CONFIG_PATH:-}" ] && [ -n "$CONFIG_ARG" ] && [ "$CONFIG_ARG" != "full" ] && [ "$CONFIG_ARG" != "test" ]; then
-  CONFIG_PATH="$CONFIG_ARG"
+if [ -z "${CONFIG_PATH:-}" ]; then
+  CONFIG_PROFILE="${CONFIG_PROFILE:-baseline}"
+  if [ -n "$CONFIG_ARG" ]; then
+    case "$CONFIG_ARG" in
+      baseline|surface|surface_con|surface_on)
+        CONFIG_PROFILE="$CONFIG_ARG"
+        ;;
+      *)
+        CONFIG_PATH="$CONFIG_ARG"
+        ;;
+    esac
+  fi
 fi
 
 if [ -z "${CONFIG_PATH:-}" ]; then
-  CONFIG_PROFILE="${CONFIG_PROFILE:-full}"
-  if [ -n "$CONFIG_ARG" ]; then
-    CONFIG_PROFILE="$CONFIG_ARG"
-  fi
   case "$CONFIG_PROFILE" in
-    full)
-      CONFIG_PATH="configs/config.full.yaml"
+    baseline)
+      CONFIG_PATH="configs/config.baseline.yaml"
       ;;
-    test)
-      CONFIG_PATH="configs/config.test.yaml"
+    surface|surface_con)
+      CONFIG_PATH="configs/config.surface_con.yaml"
+      ;;
+    surface_on)
+      CONFIG_PATH="configs/config.surface_on.yaml"
       ;;
     *)
-      echo "[ERROR] Unknown CONFIG_PROFILE='$CONFIG_PROFILE'. Use full/test or set CONFIG_PATH."
+      echo "[ERROR] Unknown CONFIG_PROFILE='$CONFIG_PROFILE'. Use baseline/surface_con/surface_on or set CONFIG_PATH."
       exit 1
       ;;
   esac
